@@ -85,3 +85,86 @@ SELECT
 FROM classificacao c
 
 GROUP BY ALL
+
+-- COMMAND ----------
+
+-- FErnando -- testes
+
+WITH transacoes AS (
+    SELECT  
+        date_format(p.dtPedido, 'yyyy-MM') AS ano_mes,
+        v.idVendedor AS vendedor, 
+        c.idClienteUnico AS cliente,
+        c.descUF AS uf_cliente
+    FROM silver.olist.pedido p
+    JOIN silver.olist.item_pedido i ON i.idPedido = p.idPedido
+    JOIN silver.olist.cliente c ON c.idCliente = p.idCliente
+    JOIN silver.olist.vendedor v ON v.idVendedor = i.idVendedor
+    WHERE p.descSituacao <> 'canceled'
+    AND p.dtPedido < '2017-06-01'
+),
+acum AS (
+    SELECT 
+        t.ano_mes,
+        t.vendedor, 
+        t.cliente, 
+        t.uf_cliente,
+        COUNT(*) AS comprasNoMes,
+        SUM(COUNT(*)) OVER (
+            PARTITION BY t.vendedor, t.cliente 
+            ORDER BY t.ano_mes 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS comprasHistoricas
+    FROM transacoes t
+    GROUP BY t.ano_mes, t.vendedor, t.cliente, t.uf_cliente
+),
+classificacao AS (
+    SELECT 
+        a.ano_mes,
+        a.vendedor, 
+        a.cliente, 
+        a.uf_cliente,
+        a.comprasNoMes,
+        a.comprasHistoricas,
+        CASE 
+            WHEN a.comprasNoMes > 0 AND a.comprasHistoricas IS NULL THEN 'Cliente Novo'
+            WHEN a.comprasNoMes > 0 AND a.comprasHistoricas >= 2 THEN 'Cliente Recorrente'
+            WHEN a.comprasNoMes = 0 AND a.comprasHistoricas > 0 THEN 'Cliente Pontual'
+            ELSE 'Outro'
+        END AS categoriaCliente
+    FROM acum a
+),
+clientes_estados AS (
+    SELECT 
+        vendedor,
+        uf_cliente,
+        COUNT(DISTINCT cliente) AS total_clientes_uf
+    FROM transacoes
+    GROUP BY vendedor, uf_cliente
+),
+tb_colunas AS (
+    SELECT 
+        c.vendedor,
+        COUNT(DISTINCT c.cliente) AS total_clientes,
+        COUNT(DISTINCT CASE WHEN c.categoriaCliente = 'Cliente Novo' THEN c.cliente END) AS CliNovos,
+        COUNT(DISTINCT CASE WHEN c.categoriaCliente = 'Cliente Recorrente' THEN c.cliente END) AS CliRecorr,
+        COUNT(DISTINCT CASE WHEN c.categoriaCliente = 'Cliente Pontual' THEN c.cliente END) AS CliPontuais
+    FROM classificacao c
+    WHERE c.ano_mes = '2017-05'
+    GROUP BY c.vendedor
+), tb_final as
+(
+SELECT 
+    f.vendedor, 
+    f.total_clientes, 
+    f.CliNovos, 
+    f.CliRecorr, 
+    f.CliPontuais,
+    e.uf_cliente,
+    e.total_clientes_uf
+FROM tb_colunas f
+LEFT JOIN clientes_estados e ON f.vendedor = e.vendedor
+ORDER BY f.vendedor, e.uf_cliente
+)
+select * from tb_final
+limit 10
